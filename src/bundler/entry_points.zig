@@ -193,9 +193,8 @@ pub const ServerEntryPoint = struct {
                     \\// @bun
                     \\var hmrSymbol = Symbol.for("BunServerHMR");
                     \\import * as start from '{}';
-                    \\var entryNamespace = start;
-                    \\if (typeof entryNamespace?.then === 'function') {{
-                    \\   entryNamespace = entryNamespace.then((entryNamespace) => {{
+                    \\if (typeof start?.then === 'function') {{
+                    \\   start.then((entryNamespace) => {{
                     \\      if(typeof entryNamespace?.default?.fetch === 'function')  {{
                     \\        var server = globalThis[hmrSymbol];
                     \\        if (server) {{
@@ -206,12 +205,12 @@ pub const ServerEntryPoint = struct {
                     \\        }}
                     \\      }}
                     \\   }}, reportError);
-                    \\}} else if (typeof entryNamespace?.default?.fetch === 'function') {{
+                    \\}} else if (typeof start?.default?.fetch === 'function') {{
                     \\   var server = globalThis[hmrSymbol];
                     \\   if (server) {{
-                    \\      server.reload(entryNamespace.default);
+                    \\      server.reload(start.default);
                     \\   }} else {{
-                    \\      server = globalThis[hmrSymbol] = Bun.serve(entryNamespace.default);
+                    \\      server = globalThis[hmrSymbol] = Bun.serve(start.default);
                     \\      console.debug(`Started server ${{server.protocol}}://${{server.hostname}}:${{server.port}}`);
                     \\   }}
                     \\}}
@@ -226,15 +225,14 @@ pub const ServerEntryPoint = struct {
                 allocator,
                 \\// @bun
                 \\import * as start from "{}";
-                \\var entryNamespace = start;
-                \\if (typeof entryNamespace?.then === 'function') {{
-                \\   entryNamespace = entryNamespace.then((entryNamespace) => {{
-                \\      if(typeof entryNamespace?.default?.fetch === 'function')  {{
-                \\        Bun.serve(entryNamespace.default);
+                \\if (typeof start?.then === 'function') {{
+                \\   start.then((ns) => {{
+                \\      if(typeof ns?.default?.fetch === 'function')  {{
+                \\        Bun.serve(ns.default);
                 \\      }}
                 \\   }}, reportError);
-                \\}} else if (typeof entryNamespace?.default?.fetch === 'function') {{
-                \\   Bun.serve(entryNamespace.default);
+                \\}} else if (typeof start?.default?.fetch === 'function') {{
+                \\   Bun.serve(start.default);
                 \\}}
                 \\
             ,
