@@ -93,7 +93,7 @@ The following JavaScript objects are supported for redirection to:
 To redirect the output from JavaScript objects to stdin, use the `<` operator:
 
 ```js
-import { $, file } from "bun";
+import { $ } from "bun";
 
 const response = new Response("hello i am a response body");
 
