@@ -963,7 +963,7 @@ pub const ArgumentsSlice = struct {
             .remaining = arguments,
             .vm = vm,
             .all = arguments,
-            .arena = @import("root").bun.ArenaAllocator.init(vm.allocator),
+            .arena = bun.ArenaAllocator.init(vm.allocator),
         };
     }
 
@@ -1062,7 +1062,7 @@ pub fn modeFromJS(ctx: JSC.C.JSContextRef, value: JSC.JSValue, exception: JSC.C.
         //        the example), specifies permissions for the group. The right-most
         //        digit (5 in the example), specifies the permissions for others.
 
-        var zig_str = JSC.ZigString.init("");
+        var zig_str = JSC.ZigString.Empty;
         value.toZigString(&zig_str, ctx.ptr());
         var slice = zig_str.slice();
         if (strings.hasPrefix(slice, "0o")) {
@@ -2132,7 +2132,7 @@ pub const Path = struct {
     ) callconv(.C) JSC.JSValue {
         if (comptime is_bindgen) return JSC.JSValue.jsUndefined();
         if (args_len == 0) return JSC.ZigString.init(".").toValue(globalThis);
-        var arena = @import("root").bun.ArenaAllocator.init(heap_allocator);
+        var arena = bun.ArenaAllocator.init(heap_allocator);
         defer arena.deinit();
 
         const arena_allocator = arena.allocator();
@@ -2331,34 +2331,104 @@ pub const Path = struct {
     pub fn resolve(globalThis: *JSC.JSGlobalObject, isWindows: bool, args_ptr: [*]JSC.JSValue, args_len: u16) callconv(.C) JSC.JSValue {
         if (comptime is_bindgen) return JSC.JSValue.jsUndefined();
 
-        var stack_fallback_allocator = std.heap.stackFallback(
-            (32 * @sizeOf(string)),
-            heap_allocator,
-        );
-        var allocator = stack_fallback_allocator.get();
-        var out_buf: [bun.MAX_PATH_BYTES * 2]u8 = undefined;
+        var arena = bun.ArenaAllocator.init(heap_allocator);
+        defer arena.deinit();
 
-        var parts = allocator.alloc(string, args_len) catch unreachable;
-        defer allocator.free(parts);
+        const cwd = Fs.FileSystem.instance.top_level_dir;
+        var out = cwd;
+        if (args_len > 0) {
+            const arena_allocator = arena.allocator();
+            var stack_fallback_allocator = std.heap.stackFallback(
+                (32 * @sizeOf(string)),
+                heap_allocator,
+            );
+            var allocator = stack_fallback_allocator.get();
+            const parts_len = args_len + 1;
+            var parts = allocator.alloc(string, parts_len) catch unreachable;
+            defer allocator.free(parts);
+            
+            parts[0] = cwd;
+            var i: u16 = 0;
+            while (i < args_len) : (i += 1) {
+                 parts[i + 1] = args_ptr[i].toSlice(globalThis, arena_allocator).slice();
+            }
+            if (isWindows) {
+                out = std.fs.path.resolveWindows(arena_allocator, parts) catch "";
+            } else {
+                out = std.fs.path.resolve(arena_allocator, parts) catch "";
+            }
+        }
+        var outStr = JSC.ZigString.init(out);
+        if (arena.state.buffer_list.first != null)
+            outStr.setOutputEncoding();
 
+        return outStr.toValueGC(globalThis);
+    }
+
+    fn toNamespacedPathPosix(path: []const u8) []const u8 {
+        return path;
+    }
+
+    // Based on Node's path.win32.toNamespacedPath:
+    // https://github.com/nodejs/node/blob/6ae20aa63de78294b18d5015481485b7cd8fbb60/lib/path.js#L622
+    fn toNamespacedPathWindows(path: []const u8) []const u8 {
         var arena = bun.ArenaAllocator.init(heap_allocator);
         const arena_allocator = arena.allocator();
         defer arena.deinit();
 
-        var i: u16 = 0;
-        while (i < args_len) : (i += 1) {
-            parts[i] = args_ptr[i].toSlice(globalThis, arena_allocator).slice();
+        const resolvedPath = std.fs.path.resolveWindows(arena_allocator, &.{ path }) catch "";
+        defer arena_allocator.free(resolvedPath);
+        if (resolvedPath.len <= 2) {
+            return path;
         }
 
-        var out: JSC.ZigString = if (!isWindows)
-            JSC.ZigString.init(strings.withoutTrailingSlash(PathHandler.joinAbsStringBuf(Fs.FileSystem.instance.top_level_dir, &out_buf, parts, .posix)))
-        else
-            JSC.ZigString.init(strings.withoutTrailingSlashWindowsPath(PathHandler.joinAbsStringBuf(Fs.FileSystem.instance.top_level_dir, &out_buf, parts, .windows)));
+        const byte0 = resolvedPath[0];
+        if (byte0 == std.fs.path.sep) {
+            const byte1 = resolvedPath[1];
+            const byte2 = resolvedPath[2];
+            // Possible UNC root
+            if (resolvedPath[1] == '\\') {
+                if (byte2 != '?' and byte2 != '.') {
+                   // Matched non-long UNC root, convert the path to a long UNC path
+                   const root = "\\\\?\\UNC\\";
+                   var buf: [bun.MAX_PATH_BYTES]u8 = undefined;
+                   const totalLen = root.len + resolvedPath.len;
+                   @memcpy(buf[0..root.len], root);
+                   @memcpy(buf[root.len .. totalLen], resolvedPath);
+                   return buf[0.. totalLen];
+                }
+             } else if (
+                // Based on Node's path.isWindowsDeviceRoot:
+                // https://github.com/nodejs/node/blob/6ae20aa63de78294b18d5015481485b7cd8fbb60/lib/path.js#L60C10-L60C29
+                (byte0 >= 'a' and byte0 <= 'z') or (byte0 >= 'A' and byte0 <= 'Z') and
+                byte1 == ':' and
+                byte2 == '\\'
+              ) {
+                // Matched device root, convert the path to a long UNC path
+                const root = "\\\\?\\";
+                var buf: [bun.MAX_PATH_BYTES]u8 = undefined;
+                const totalLen = root.len + resolvedPath.len;
+                @memcpy(buf[0..root.len], root);
+                @memcpy(buf[root.len .. totalLen], resolvedPath);
+                return buf[0.. totalLen];
+             }
+        }
+        return path;
+    }
 
-        if (arena.state.buffer_list.first != null)
-            out.setOutputEncoding();
-
-        return out.toValueGC(globalThis);
+    pub fn toNamespacedPath(globalThis: *JSC.JSGlobalObject, isWindows: bool, args_ptr: [*]JSC.JSValue, args_len: u16) callconv(.C) JSC.JSValue {
+        if (comptime is_bindgen) return JSC.JSValue.jsUndefined();
+        if (args_len == 0) return JSC.JSValue.jsUndefined();
+        var arguments: []JSC.JSValue = args_ptr[0 ..args_len];
+        if (!isWindows or !arguments[0].isString()) return arguments[0];
+        var stack_fallback = std.heap.stackFallback(4096, JSC.getAllocator(globalThis));
+        const allocator = stack_fallback.get();
+        var path = arguments[0].toSlice(globalThis, allocator);
+        defer path.deinit();
+        if (path.len == 0) return arguments[0];
+        const base_slice = path.slice();
+        const out = @This().toNamespacedPathWindows(base_slice);
+        return JSC.ZigString.init(out).withEncoding().toValueGC(globalThis);
     }
 
     pub const Export = shim.exportFunctions(.{
@@ -2372,6 +2442,7 @@ pub const Path = struct {
         .parse = parse,
         .relative = relative,
         .resolve = resolve,
+        .toNamespacedPath = toNamespacedPath,
     });
 
     pub const Extern = [_][]const u8{"create"};
@@ -2407,6 +2478,9 @@ pub const Path = struct {
             });
             @export(Path.resolve, .{
                 .name = Export[9].symbol_name,
+            });
+            @export(Path.toNamespacedPath, .{
+                .name = Export[10].symbol_name,
             });
         }
     }
